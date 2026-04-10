@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ScreenShip</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header class="popup-header">
+        <h1>⛵ ScreenShip</h1>
+        <p>Capture fast. Annotate fast. Export free.</p>
+      </header>
+
+      <section class="actions">
+        <button class="action-button" data-mode="selection">Selection Capture</button>
+        <button class="action-button" data-mode="scrolling_full_page">Scrolling Full Page</button>
+        <button class="action-button" data-mode="viewport">Visible Viewport</button>
+      </section>
+
+      <p id="status" class="status" aria-live="polite"></p>
+    </main>
+
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>

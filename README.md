@@ -127,6 +127,24 @@ Included fields can contain source URL, title, capture timestamp, viewport/page 
 
 Always review `manifest.json` permissions during release prep.
 
+## Engineering Guarantees
+
+These are the standards we want ScreenShip to be held to:
+
+- Pricing guarantee: core screenshot + editing features remain subscription-free.
+- Privacy guarantee: no required cloud processing in the core capture/edit/export path.
+- Provenance guarantee: exported files include embedded metadata when format supports it (PNG/JPG/WebP).
+- Usability guarantee: selection and scroll capture remain first-class features, not upsell gates.
+
+Current performance/reliability targets:
+
+- Selection capture success rate: >= 99% on common static pages.
+- Editor first-load time: <= 1.5s for a typical 1920x1080 capture on mid-tier hardware.
+- Full-page capture robustness: graceful handling of sticky headers and dynamic content changes.
+- Export integrity: flattened output must match visible editor composition.
+
+If ScreenShip misses one of these targets, we should treat it as a bug, not "expected behavior."
+
 ## Run The Extension (Unpacked)
 
 1. Open `chrome://extensions`.

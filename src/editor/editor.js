@@ -22,8 +22,12 @@ const DEFAULT_STROKE_COLOR = "#ff0000";
 const DEFAULT_HIGHLIGHT_COLOR = "#fff200";
 const DEFAULT_HIGHLIGHT_WIDTH = 16;
 const DEFAULT_HIGHLIGHT_OPACITY = 0.42;
-const CROP_AUTO_SCROLL_EDGE_PX = 56;
-const CROP_AUTO_SCROLL_MAX_STEP = 30;
+const CROP_AUTO_SCROLL_ZONE_RATIO = 0.16;
+const CROP_AUTO_SCROLL_EDGE_MIN_PX = 40;
+const CROP_AUTO_SCROLL_EDGE_MAX_PX = 96;
+const CROP_AUTO_SCROLL_MIN_STEP = 1.5;
+const CROP_AUTO_SCROLL_MAX_STEP = 22;
+const CROP_AUTO_SCROLL_CURVE = 1.9;
 const BLEND_MODE_TO_COMPOSITE = Object.freeze({
   normal: "source-over",
   multiply: "multiply",
@@ -545,17 +549,23 @@ function clearPointerTracking() {
 }
 
 function getAutoScrollDelta(clientCoord, min, max) {
-  if (clientCoord < min + CROP_AUTO_SCROLL_EDGE_PX) {
-    const ratio = clamp((min + CROP_AUTO_SCROLL_EDGE_PX - clientCoord) / CROP_AUTO_SCROLL_EDGE_PX, 0, 1);
-    return -Math.ceil(ratio * CROP_AUTO_SCROLL_MAX_STEP);
+  const span = Math.max(1, max - min);
+  const edgeZone = clamp(span * CROP_AUTO_SCROLL_ZONE_RATIO, CROP_AUTO_SCROLL_EDGE_MIN_PX, CROP_AUTO_SCROLL_EDGE_MAX_PX);
+  let signedRatio = 0;
+
+  if (clientCoord < min + edgeZone) {
+    signedRatio = -clamp((min + edgeZone - clientCoord) / edgeZone, 0, 1);
+  } else if (clientCoord > max - edgeZone) {
+    signedRatio = clamp((clientCoord - (max - edgeZone)) / edgeZone, 0, 1);
   }
 
-  if (clientCoord > max - CROP_AUTO_SCROLL_EDGE_PX) {
-    const ratio = clamp((clientCoord - (max - CROP_AUTO_SCROLL_EDGE_PX)) / CROP_AUTO_SCROLL_EDGE_PX, 0, 1);
-    return Math.ceil(ratio * CROP_AUTO_SCROLL_MAX_STEP);
+  if (signedRatio === 0) {
+    return 0;
   }
 
-  return 0;
+  const magnitude = Math.pow(Math.abs(signedRatio), CROP_AUTO_SCROLL_CURVE);
+  const step = CROP_AUTO_SCROLL_MIN_STEP + magnitude * (CROP_AUTO_SCROLL_MAX_STEP - CROP_AUTO_SCROLL_MIN_STEP);
+  return step * Math.sign(signedRatio);
 }
 
 function applyCropAutoScrollStep() {

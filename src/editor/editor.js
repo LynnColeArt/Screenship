@@ -22,6 +22,8 @@ const DEFAULT_STROKE_COLOR = "#ff0000";
 const DEFAULT_HIGHLIGHT_COLOR = "#fff200";
 const DEFAULT_HIGHLIGHT_WIDTH = 16;
 const DEFAULT_HIGHLIGHT_OPACITY = 0.42;
+const CROP_AUTO_SCROLL_EDGE_PX = 56;
+const CROP_AUTO_SCROLL_MAX_STEP = 30;
 const BLEND_MODE_TO_COMPOSITE = Object.freeze({
   normal: "source-over",
   multiply: "multiply",
@@ -77,6 +79,9 @@ const state = {
   tool: "move",
   selectedLayerId: null,
   pointerOrigin: null,
+  activePointerId: null,
+  lastPointerClient: null,
+  cropAutoScrollFrame: null,
   draft: null,
   draggingLayerId: null,
   dropLayerId: null,
@@ -390,6 +395,9 @@ function cancelActiveToolAction() {
     return true;
   }
 
+  releaseActivePointerCapture();
+  clearPointerTracking();
+
   if (state.draft) {
     state.draft = null;
     state.pointerOrigin = null;
@@ -475,13 +483,27 @@ function openInlineTextEditor(layerId) {
   render();
 }
 
-function getCanvasPoint(event) {
+function getCanvasPoint(event, options) {
+  return getCanvasPointFromClient(event.clientX, event.clientY, options);
+}
+
+function getCanvasPointFromClient(clientX, clientY, { clampToCanvas = false } = {}) {
   const rect = dom.canvas.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return { x: 0, y: 0 };
+  }
   const scaleX = dom.canvas.width / rect.width;
   const scaleY = dom.canvas.height / rect.height;
+  const rawPoint = {
+    x: (clientX - rect.left) * scaleX,
+    y: (clientY - rect.top) * scaleY
+  };
+  if (!clampToCanvas) {
+    return rawPoint;
+  }
   return {
-    x: (event.clientX - rect.left) * scaleX,
-    y: (event.clientY - rect.top) * scaleY
+    x: clamp(rawPoint.x, 0, dom.canvas.width),
+    y: clamp(rawPoint.y, 0, dom.canvas.height)
   };
 }
 
@@ -491,6 +513,109 @@ function normalizeRect(x1, y1, x2, y2) {
   const width = Math.abs(x2 - x1);
   const height = Math.abs(y2 - y1);
   return { x, y, width, height };
+}
+
+function clampRectToCanvas(rect) {
+  const maxX = dom.canvas.width;
+  const maxY = dom.canvas.height;
+  const x1 = clamp(rect.x, 0, maxX);
+  const y1 = clamp(rect.y, 0, maxY);
+  const x2 = clamp(rect.x + rect.width, 0, maxX);
+  const y2 = clamp(rect.y + rect.height, 0, maxY);
+  return normalizeRect(x1, y1, x2, y2);
+}
+
+function releaseActivePointerCapture() {
+  if (state.activePointerId === null) {
+    return;
+  }
+  if (typeof dom.canvas.hasPointerCapture !== "function") {
+    return;
+  }
+  if (!dom.canvas.hasPointerCapture(state.activePointerId)) {
+    return;
+  }
+  dom.canvas.releasePointerCapture(state.activePointerId);
+}
+
+function clearPointerTracking() {
+  stopCropAutoScroll();
+  state.activePointerId = null;
+  state.lastPointerClient = null;
+}
+
+function getAutoScrollDelta(clientCoord, min, max) {
+  if (clientCoord < min + CROP_AUTO_SCROLL_EDGE_PX) {
+    const ratio = clamp((min + CROP_AUTO_SCROLL_EDGE_PX - clientCoord) / CROP_AUTO_SCROLL_EDGE_PX, 0, 1);
+    return -Math.ceil(ratio * CROP_AUTO_SCROLL_MAX_STEP);
+  }
+
+  if (clientCoord > max - CROP_AUTO_SCROLL_EDGE_PX) {
+    const ratio = clamp((clientCoord - (max - CROP_AUTO_SCROLL_EDGE_PX)) / CROP_AUTO_SCROLL_EDGE_PX, 0, 1);
+    return Math.ceil(ratio * CROP_AUTO_SCROLL_MAX_STEP);
+  }
+
+  return 0;
+}
+
+function applyCropAutoScrollStep() {
+  if (state.tool !== "crop" || !state.draft || !state.lastPointerClient) {
+    return;
+  }
+
+  const wrapperRect = dom.canvasWrapper.getBoundingClientRect();
+  if (wrapperRect.width <= 0 || wrapperRect.height <= 0) {
+    return;
+  }
+
+  const deltaX = getAutoScrollDelta(state.lastPointerClient.x, wrapperRect.left, wrapperRect.right);
+  const deltaY = getAutoScrollDelta(state.lastPointerClient.y, wrapperRect.top, wrapperRect.bottom);
+  if (deltaX === 0 && deltaY === 0) {
+    return;
+  }
+
+  const maxScrollLeft = Math.max(0, dom.canvasWrapper.scrollWidth - dom.canvasWrapper.clientWidth);
+  const maxScrollTop = Math.max(0, dom.canvasWrapper.scrollHeight - dom.canvasWrapper.clientHeight);
+  const nextScrollLeft = clamp(dom.canvasWrapper.scrollLeft + deltaX, 0, maxScrollLeft);
+  const nextScrollTop = clamp(dom.canvasWrapper.scrollTop + deltaY, 0, maxScrollTop);
+  const didScroll = nextScrollLeft !== dom.canvasWrapper.scrollLeft || nextScrollTop !== dom.canvasWrapper.scrollTop;
+  if (!didScroll) {
+    return;
+  }
+
+  dom.canvasWrapper.scrollLeft = nextScrollLeft;
+  dom.canvasWrapper.scrollTop = nextScrollTop;
+
+  const point = getCanvasPointFromClient(state.lastPointerClient.x, state.lastPointerClient.y, {
+    clampToCanvas: true
+  });
+  updateDraft(point);
+  render();
+}
+
+function startCropAutoScroll() {
+  if (state.cropAutoScrollFrame !== null) {
+    return;
+  }
+
+  const tick = () => {
+    state.cropAutoScrollFrame = null;
+    if (state.activePointerId === null || state.tool !== "crop" || !state.draft) {
+      return;
+    }
+    applyCropAutoScrollStep();
+    startCropAutoScroll();
+  };
+
+  state.cropAutoScrollFrame = requestAnimationFrame(tick);
+}
+
+function stopCropAutoScroll() {
+  if (state.cropAutoScrollFrame === null) {
+    return;
+  }
+  cancelAnimationFrame(state.cropAutoScrollFrame);
+  state.cropAutoScrollFrame = null;
 }
 
 function snapshot() {
@@ -1287,7 +1412,8 @@ function translateLayer(layer, dx, dy) {
 }
 
 async function applyCropLayer(cropLayer) {
-  const crop = normalizeRect(cropLayer.x1, cropLayer.y1, cropLayer.x2, cropLayer.y2);
+  const rawCrop = normalizeRect(cropLayer.x1, cropLayer.y1, cropLayer.x2, cropLayer.y2);
+  const crop = clampRectToCanvas(rawCrop);
   if (crop.width < 3 || crop.height < 3) {
     return;
   }
@@ -1585,6 +1711,18 @@ function handleCanvasPointerDown(event) {
     return;
   }
 
+  if (state.activePointerId !== null && state.activePointerId !== event.pointerId) {
+    return;
+  }
+  state.activePointerId = event.pointerId;
+  state.lastPointerClient = {
+    x: event.clientX,
+    y: event.clientY
+  };
+  if (typeof dom.canvas.setPointerCapture === "function") {
+    dom.canvas.setPointerCapture(event.pointerId);
+  }
+
   if (isInlineEditing()) {
     closeInlineTextEditor({ commit: true });
   }
@@ -1645,6 +1783,9 @@ function handleCanvasPointerDown(event) {
   state.pointerOrigin = point;
   startDraft(point);
   render();
+  if (state.tool === "crop" && state.draft) {
+    startCropAutoScroll();
+  }
 }
 
 function handleCanvasPointerMove(event) {
@@ -1652,7 +1793,20 @@ function handleCanvasPointerMove(event) {
     return;
   }
 
-  const point = getCanvasPoint(event);
+  if (state.activePointerId !== null && event.pointerId !== state.activePointerId) {
+    return;
+  }
+
+  if (state.activePointerId === event.pointerId) {
+    state.lastPointerClient = {
+      x: event.clientX,
+      y: event.clientY
+    };
+  }
+
+  const point = getCanvasPoint(event, {
+    clampToCanvas: state.tool === "crop" && Boolean(state.draft)
+  });
 
   if (state.resizingLayer) {
     applyLayerResize(point);
@@ -1679,6 +1833,9 @@ function handleCanvasPointerMove(event) {
   if (state.draft) {
     updateDraft(point);
     render();
+    if (state.tool === "crop") {
+      startCropAutoScroll();
+    }
     return;
   }
 
@@ -1692,7 +1849,13 @@ function handleCanvasPointerMove(event) {
   }
 }
 
-async function handleCanvasPointerUp() {
+async function handleCanvasPointerUp(event) {
+  if (event && state.activePointerId !== null && event.pointerId !== state.activePointerId) {
+    return;
+  }
+  releaseActivePointerCapture();
+  clearPointerTracking();
+
   if (state.resizingLayer) {
     if (state.resizingDidChange && state.resizingSnapshot) {
       pushHistorySnapshot(state.resizingSnapshot);
@@ -1863,8 +2026,8 @@ function bindEvents() {
 
   dom.canvas.addEventListener("pointerdown", handleCanvasPointerDown);
   dom.canvas.addEventListener("pointermove", handleCanvasPointerMove);
-  dom.canvas.addEventListener("pointerup", () => void handleCanvasPointerUp());
-  dom.canvas.addEventListener("pointerleave", () => void handleCanvasPointerUp());
+  dom.canvas.addEventListener("pointerup", (event) => void handleCanvasPointerUp(event));
+  dom.canvas.addEventListener("pointercancel", (event) => void handleCanvasPointerUp(event));
   dom.canvas.addEventListener("dblclick", handleCanvasDoubleClick);
   dom.canvasWrapper.addEventListener("scroll", () => {
     if (isInlineEditing()) {

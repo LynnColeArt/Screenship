@@ -10,7 +10,6 @@
     "128": "img/icon-128.png"
   },
   "permissions": ["activeTab", "scripting", "tabs", "storage", "clipboardWrite"],
-  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "src/background/service-worker.js",
     "type": "module"
@@ -22,12 +21,5 @@
     },
     "default_title": "ScreenShip",
     "default_popup": "src/popup/popup.html"
-  },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["src/content/selection-overlay.js", "src/content/scroll-capture.js"],
-      "run_at": "document_idle"
-    }
-  ]
+  }
 }

@@ -36,6 +36,8 @@ It supports selection and scrolling full-page capture, Photoshop-inspired editin
 - As a user, I can free-draw and highlight.
 - As a user, I can style annotations with foreground/background colors.
 - As a user, I can add notes in plain text or sticky-note style.
+- As a user, I can rotate supported annotation layers in the editor.
+- As a user, I can zoom the editor canvas in and out while editing.
 - As a user, I can export a flattened PNG/JPG/WebP image.
 - As a user, I can inspect metadata showing where and when the screenshot was created.
 
@@ -62,7 +64,7 @@ It supports selection and scrolling full-page capture, Photoshop-inspired editin
   - Crop
   - Pen/doodle
   - Highlight
-  - Blur brush (basic pixelation/blur effect)
+  - Blur brush with Gaussian default and optional pixelate mode
   - Text
   - Sticky note preset (text with tinted background)
   - Rectangle/square
@@ -70,6 +72,7 @@ It supports selection and scrolling full-page capture, Photoshop-inspired editin
   - Line
   - Arrow
 - Undo/redo stack (minimum 50 actions).
+- Rotate handle for supported annotation layers in move/select mode.
 - Zoom controls and pan.
 
 ### 6.3 Styling
@@ -149,6 +152,7 @@ Interaction requirements:
   - `Ctrl/Cmd+Shift+Z` redo
   - `Delete` remove selected layer
 - Clear active tool indication.
+- Zoom slider with visible percentage readout.
 - Cursor changes by tool type.
 - Responsive support for common desktop widths.
 
@@ -213,7 +217,7 @@ type Layer =
   | { id: string; type: "shape"; shape: "rect" | "ellipse" | "line" | "arrow"; bounds: { x: number; y: number; w: number; h: number }; stroke: string; fill?: string; strokeWidth: number; opacity: number }
   | { id: string; type: "text"; text: string; x: number; y: number; color: string; bg?: string; fontSize: number; fontFamily: string; sticky: boolean; opacity: number }
   | { id: string; type: "highlight"; points: Array<[number, number]>; color: string; width: number; opacity: number }
-  | { id: string; type: "blur"; regions: Array<{ x: number; y: number; w: number; h: number }>; strength: number };
+  | { id: string; type: "blur"; regions: Array<{ x: number; y: number; w: number; h: number }>; strength: number; mode?: "gaussian" | "pixelate" };
 ```
 
 ## 10. Quality Requirements
@@ -240,8 +244,9 @@ type Layer =
 
 - User can capture selection area and open editor.
 - User can capture scrolling full page and open editor.
-- User can crop, draw, add text notes, add sticky note, and place shapes (circle, square/rect, arrow, line).
+- User can crop, draw, add text notes, add sticky note, rotate supported layers, and place shapes (circle, square/rect, arrow, line).
 - User can change foreground/background colors where applicable.
+- User can zoom the editor canvas without breaking layer placement or editing.
 - User can export flattened PNG, JPG, and WebP.
 - Exported file contains metadata fields listed in section 6.6.
 - UI follows Photoshop-like structure (left tools, top controls, right properties/layers, center canvas).
@@ -267,4 +272,3 @@ type Layer =
 - Post-launch:
   - Collect feedback/issues
   - Prioritize reliability fixes for full-page stitch edge cases
-

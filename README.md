@@ -125,6 +125,8 @@ Included fields can contain source URL, title, capture timestamp, viewport/page 
 - No required backend service.
 - No account required.
 
+Privacy policy: [docs/privacy-policy.md](docs/privacy-policy.md)
+
 Always review `manifest.json` permissions during release prep.
 
 ## Engineering Guarantees
@@ -158,6 +160,7 @@ If ScreenShip misses one of these targets, we should treat it as a bug, not "exp
 - `manifest.json`: MV3 extension definition
 - `docs/spec.md`: Product and engineering spec
 - `docs/manual-qa.md`: Manual QA and stitch tuning notes
+- `docs/privacy-policy.md`: Chrome Web Store privacy policy text
 - `src/background`: Capture orchestration + session management
 - `src/content`: Selection overlay and full-page scroll capture logic
 - `src/editor`: Canvas editor UI, interaction logic, and layer rendering

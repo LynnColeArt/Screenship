@@ -16,6 +16,11 @@
           <button id="export-button" class="topbar-button topbar-button--primary">💾 Save</button>
         </div>
         <div class="topbar-export">
+          <div class="topbar-range-group">
+            <label for="zoom-range">Zoom</label>
+            <input id="zoom-range" type="range" min="0.25" max="3" step="0.05" value="1" />
+            <span id="zoom-value" class="range-value">100%</span>
+          </div>
           <label for="export-format">Export</label>
           <select id="export-format">
             <option value="png">PNG</option>
@@ -28,6 +33,34 @@
           <button id="theme-toggle" class="topbar-button" aria-label="Toggle theme">☀️ Day</button>
         </div>
       </header>
+
+      <section class="quick-color-bar" aria-label="Quick color controls">
+        <div class="quick-color-copy">
+          <span class="quick-color-title">Quick Colors</span>
+          <span class="quick-color-subtitle">Applies to selected layers and new annotations.</span>
+        </div>
+        <div class="quick-color-controls">
+          <label class="quick-color-control">
+            <span>Foreground</span>
+            <input id="quick-stroke-color" class="quick-color-input" type="color" value="#ff0000" />
+          </label>
+          <label class="quick-color-control">
+            <span>Background</span>
+            <input id="quick-fill-color" class="quick-color-input" type="color" value="#fff2a8" />
+          </label>
+          <button id="swap-colors-button" class="topbar-button" type="button">⇄ Swap</button>
+          <div class="color-swatch-strip" aria-label="Foreground presets">
+            <button class="color-swatch-button" type="button" data-color-swatch="#ff4d4f" style="--swatch: #ff4d4f" aria-label="Red"></button>
+            <button class="color-swatch-button" type="button" data-color-swatch="#ff8c42" style="--swatch: #ff8c42" aria-label="Orange"></button>
+            <button class="color-swatch-button" type="button" data-color-swatch="#fff200" style="--swatch: #fff200" aria-label="Yellow"></button>
+            <button class="color-swatch-button" type="button" data-color-swatch="#3ecf8e" style="--swatch: #3ecf8e" aria-label="Green"></button>
+            <button class="color-swatch-button" type="button" data-color-swatch="#19b5fe" style="--swatch: #19b5fe" aria-label="Blue"></button>
+            <button class="color-swatch-button" type="button" data-color-swatch="#7a5cff" style="--swatch: #7a5cff" aria-label="Indigo"></button>
+            <button class="color-swatch-button" type="button" data-color-swatch="#ff5ca8" style="--swatch: #ff5ca8" aria-label="Pink"></button>
+            <button class="color-swatch-button" type="button" data-color-swatch="#10151d" style="--swatch: #10151d" aria-label="Near black"></button>
+          </div>
+        </div>
+      </section>
 
       <div class="workspace">
         <aside class="tools-panel">
@@ -108,6 +141,13 @@
             <label class="inspector-field" data-inspector="blur">
               Blur Strength
               <input id="blur-strength" type="range" min="3" max="24" value="10" />
+            </label>
+            <label class="inspector-field" data-inspector="blur">
+              Blur Mode
+              <select id="blur-mode">
+                <option value="gaussian">Gaussian</option>
+                <option value="pixelate">Pixelate</option>
+              </select>
             </label>
             <label class="inspector-field" data-inspector="text">
               Font Family

@@ -18,6 +18,8 @@ const TOOL_HOTKEYS = new Map([
 ]);
 const THEME_STORAGE_KEY = "screenship:editor-theme";
 const TEXT_HANDLE_SIZE = 10;
+const ROTATE_HANDLE_RADIUS = 7;
+const ROTATE_HANDLE_OFFSET = 28;
 const DEFAULT_STROKE_COLOR = "#ff0000";
 const DEFAULT_HIGHLIGHT_COLOR = "#fff200";
 const DEFAULT_HIGHLIGHT_WIDTH = 16;
@@ -25,9 +27,12 @@ const DEFAULT_HIGHLIGHT_OPACITY = 0.42;
 const CROP_AUTO_SCROLL_ZONE_RATIO = 0.16;
 const CROP_AUTO_SCROLL_EDGE_MIN_PX = 40;
 const CROP_AUTO_SCROLL_EDGE_MAX_PX = 96;
-const CROP_AUTO_SCROLL_MIN_STEP = 1.5;
-const CROP_AUTO_SCROLL_MAX_STEP = 22;
+const CROP_AUTO_SCROLL_MIN_SPEED = 120;
+const CROP_AUTO_SCROLL_MAX_SPEED = 1320;
 const CROP_AUTO_SCROLL_CURVE = 1.9;
+const MIN_EDITOR_ZOOM = 0.25;
+const MAX_EDITOR_ZOOM = 3;
+const ROTATABLE_LAYER_KINDS = new Set(["shape", "stroke", "highlight", "text"]);
 const BLEND_MODE_TO_COMPOSITE = Object.freeze({
   normal: "source-over",
   multiply: "multiply",
@@ -54,13 +59,20 @@ const dom = {
   layersList: document.querySelector("#layers-list"),
   metadataList: document.querySelector("#metadata-list"),
   propertiesSection: document.querySelector("#properties-section"),
+  zoomRange: document.querySelector("#zoom-range"),
+  zoomValue: document.querySelector("#zoom-value"),
   blendMode: document.querySelector("#blend-mode"),
   strokeColor: document.querySelector("#stroke-color"),
   fillColor: document.querySelector("#fill-color"),
+  quickStrokeColor: document.querySelector("#quick-stroke-color"),
+  quickFillColor: document.querySelector("#quick-fill-color"),
+  swapColorsButton: document.querySelector("#swap-colors-button"),
+  colorSwatches: Array.from(document.querySelectorAll("[data-color-swatch]")),
   strokeWidth: document.querySelector("#stroke-width"),
   opacity: document.querySelector("#opacity"),
   fontSize: document.querySelector("#font-size"),
   blurStrength: document.querySelector("#blur-strength"),
+  blurMode: document.querySelector("#blur-mode"),
   fontFamily: document.querySelector("#font-family"),
   textContent: document.querySelector("#text-content"),
   undoButton: document.querySelector("#undo-button"),
@@ -86,6 +98,7 @@ const state = {
   activePointerId: null,
   lastPointerClient: null,
   cropAutoScrollFrame: null,
+  cropAutoScrollLastAt: null,
   draft: null,
   draggingLayerId: null,
   dropLayerId: null,
@@ -93,6 +106,9 @@ const state = {
   movingLayerId: null,
   movingSnapshot: null,
   movingDidTranslate: false,
+  rotatingLayer: null,
+  rotatingSnapshot: null,
+  rotatingDidChange: false,
   resizingLayer: null,
   resizingSnapshot: null,
   resizingDidChange: false,
@@ -100,6 +116,7 @@ const state = {
   history: [],
   future: [],
   theme: "dark",
+  zoom: 1,
   style: {
     strokeColor: DEFAULT_STROKE_COLOR,
     fillColor: "#fff2a8",
@@ -108,6 +125,7 @@ const state = {
     blendMode: "normal",
     fontSize: 18,
     blurStrength: 10,
+    blurMode: "gaussian",
     fontFamily: '"Avenir Next", sans-serif',
     textContent: "Note"
   }
@@ -174,8 +192,94 @@ function getCanvasBoundsInWrapper() {
   };
 }
 
+function getCanvasDisplayScale() {
+  const rect = dom.canvas.getBoundingClientRect();
+  return {
+    x: rect.width > 0 ? rect.width / Math.max(1, dom.canvas.width) : state.zoom,
+    y: rect.height > 0 ? rect.height / Math.max(1, dom.canvas.height) : state.zoom
+  };
+}
+
+function updateCanvasDisplaySize() {
+  if (!state.baseImage) {
+    dom.canvas.style.width = "";
+    dom.canvas.style.height = "";
+    updateZoomReadout();
+    return;
+  }
+
+  dom.canvas.style.width = `${dom.canvas.width * state.zoom}px`;
+  dom.canvas.style.height = `${dom.canvas.height * state.zoom}px`;
+  updateZoomReadout();
+}
+
+function setZoom(nextZoom, { preserveCenter = true } = {}) {
+  const zoom = clamp(nextZoom, MIN_EDITOR_ZOOM, MAX_EDITOR_ZOOM);
+  const previousZoom = state.zoom || 1;
+  const focusX = preserveCenter ? (dom.canvasWrapper.scrollLeft + dom.canvasWrapper.clientWidth / 2) / previousZoom : null;
+  const focusY = preserveCenter ? (dom.canvasWrapper.scrollTop + dom.canvasWrapper.clientHeight / 2) / previousZoom : null;
+
+  if (zoom === state.zoom) {
+    updateZoomReadout();
+    return;
+  }
+
+  if (isInlineEditing()) {
+    closeInlineTextEditor({ commit: true });
+  }
+
+  state.zoom = zoom;
+  updateCanvasDisplaySize();
+
+  if (preserveCenter && state.baseImage) {
+    const maxScrollLeft = Math.max(0, dom.canvasWrapper.scrollWidth - dom.canvasWrapper.clientWidth);
+    const maxScrollTop = Math.max(0, dom.canvasWrapper.scrollHeight - dom.canvasWrapper.clientHeight);
+    dom.canvasWrapper.scrollLeft = clamp(focusX * zoom - dom.canvasWrapper.clientWidth / 2, 0, maxScrollLeft);
+    dom.canvasWrapper.scrollTop = clamp(focusY * zoom - dom.canvasWrapper.clientHeight / 2, 0, maxScrollTop);
+  }
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function sanitizeRotation(rotation) {
+  if (!Number.isFinite(rotation)) {
+    return 0;
+  }
+  let normalized = ((rotation + 180) % 360 + 360) % 360 - 180;
+  if (normalized === -180 && rotation > 0) {
+    normalized = 180;
+  }
+  return normalized;
+}
+
+function toRadians(degrees) {
+  return (degrees * Math.PI) / 180;
+}
+
+function formatZoomLabel(zoom) {
+  return `${Math.round(zoom * 100)}%`;
+}
+
+function isRotatableLayer(layer) {
+  return Boolean(layer && ROTATABLE_LAYER_KINDS.has(layer.kind));
+}
+
+function getLayerRotation(layer) {
+  if (!isRotatableLayer(layer)) {
+    return 0;
+  }
+  return sanitizeRotation(layer.rotation);
+}
+
+function updateZoomReadout() {
+  if (dom.zoomRange) {
+    dom.zoomRange.value = String(state.zoom);
+  }
+  if (dom.zoomValue) {
+    dom.zoomValue.textContent = formatZoomLabel(state.zoom);
+  }
 }
 
 function getSelectedLayer() {
@@ -192,6 +296,13 @@ function normalizeBlendMode(blendMode) {
   return "normal";
 }
 
+function normalizeBlurMode(mode) {
+  if (mode === "pixelate") {
+    return "pixelate";
+  }
+  return "gaussian";
+}
+
 function getLayerBlendMode(layer) {
   if (!layer) {
     return "normal";
@@ -203,6 +314,20 @@ function getLayerBlendMode(layer) {
     return "multiply";
   }
   return "normal";
+}
+
+function getDraftBlendModeForTool(tool) {
+  if (tool === "highlight") {
+    return "multiply";
+  }
+  return "normal";
+}
+
+function getLayerBlurMode(layer) {
+  if (!layer || layer.kind !== "blur") {
+    return normalizeBlurMode(state.style.blurMode);
+  }
+  return normalizeBlurMode(layer.mode);
 }
 
 function getInlineEditorColors(layer) {
@@ -220,6 +345,28 @@ function getInlineEditorColors(layer) {
     background: "transparent",
     textShadow: "0 0 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(255, 255, 255, 0.4)"
   };
+}
+
+function colorsMatch(left, right) {
+  return String(left || "").trim().toLowerCase() === String(right || "").trim().toLowerCase();
+}
+
+function syncColorControls() {
+  if (dom.strokeColor) {
+    dom.strokeColor.value = state.style.strokeColor;
+  }
+  if (dom.fillColor) {
+    dom.fillColor.value = state.style.fillColor;
+  }
+  if (dom.quickStrokeColor) {
+    dom.quickStrokeColor.value = state.style.strokeColor;
+  }
+  if (dom.quickFillColor) {
+    dom.quickFillColor.value = state.style.fillColor;
+  }
+  for (const swatch of dom.colorSwatches) {
+    swatch.classList.toggle("is-active", colorsMatch(swatch.dataset.colorSwatch, state.style.strokeColor));
+  }
 }
 
 function applyInlineEditorVisuals(layer) {
@@ -284,6 +431,7 @@ function syncInspectorFromSelection() {
   dom.editTextButton.disabled = !(selected && selected.kind === "text");
   if (!selected) {
     dom.blendMode.value = normalizeBlendMode(state.style.blendMode);
+    syncColorControls();
     updateInspectorFieldVisibility();
     return;
   }
@@ -303,6 +451,7 @@ function syncInspectorFromSelection() {
     dom.opacity.value = String(selected.opacity ?? state.style.opacity);
   } else if (selected.kind === "blur") {
     dom.blurStrength.value = String(selected.strength ?? state.style.blurStrength);
+    dom.blurMode.value = getLayerBlurMode(selected);
     dom.opacity.value = String(selected.opacity ?? state.style.opacity);
   } else if (selected.kind === "text") {
     dom.strokeColor.value = selected.color ?? state.style.strokeColor;
@@ -322,9 +471,34 @@ function syncInspectorFromSelection() {
   state.style.blendMode = normalizeBlendMode(dom.blendMode.value);
   state.style.fontSize = Number(dom.fontSize.value);
   state.style.blurStrength = Number(dom.blurStrength.value);
+  state.style.blurMode = normalizeBlurMode(dom.blurMode.value);
   state.style.fontFamily = dom.fontFamily.value;
   state.style.textContent = dom.textContent.value;
+  syncColorControls();
   updateInspectorFieldVisibility();
+}
+
+function commitColorStyleChange() {
+  syncColorControls();
+  applyStyleToSelectedLayer();
+  render();
+}
+
+function setStrokeColor(value) {
+  state.style.strokeColor = value;
+  commitColorStyleChange();
+}
+
+function setFillColor(value) {
+  state.style.fillColor = value;
+  commitColorStyleChange();
+}
+
+function swapStyleColors() {
+  const previousStroke = state.style.strokeColor;
+  state.style.strokeColor = state.style.fillColor;
+  state.style.fillColor = previousStroke;
+  commitColorStyleChange();
 }
 
 function applyStyleToSelectedLayer() {
@@ -350,6 +524,7 @@ function applyStyleToSelectedLayer() {
   } else if (selected.kind === "blur") {
     selected.opacity = state.style.opacity;
     selected.strength = state.style.blurStrength;
+    selected.mode = normalizeBlurMode(state.style.blurMode);
   } else if (selected.kind === "text") {
     selected.color = state.style.strokeColor;
     selected.background = state.style.fillColor;
@@ -427,6 +602,24 @@ function cancelActiveToolAction() {
     return true;
   }
 
+  if (state.rotatingLayer) {
+    const rotatingLayerId = state.rotatingLayer.layerId;
+    if (state.rotatingSnapshot) {
+      state.baseImageDataUrl = state.rotatingSnapshot.baseImageDataUrl;
+      state.layers = cloneLayers(state.rotatingSnapshot.layers);
+    }
+    state.selectedLayerId = rotatingLayerId;
+    state.rotatingLayer = null;
+    state.rotatingSnapshot = null;
+    state.rotatingDidChange = false;
+    state.pointerOrigin = null;
+    dom.canvas.style.cursor = "move";
+    syncInspectorFromSelection();
+    render();
+    setStatus("Rotation canceled.");
+    return true;
+  }
+
   if (state.resizingLayer) {
     const resizingLayerId = state.resizingLayer.layerId;
     if (state.resizingSnapshot) {
@@ -459,32 +652,37 @@ function openInlineTextEditor(layerId) {
     return;
   }
 
-  const bounds = getLayerBounds(layer);
-  if (!bounds) {
-    return;
-  }
-
-  const canvasBounds = getCanvasBoundsInWrapper();
-  const left = Math.max(4, Math.round(canvasBounds.x + bounds.x));
-  const top = Math.max(4, Math.round(canvasBounds.y + bounds.y));
-  const width = Math.max(120, Math.round(bounds.width + 24));
-  const height = Math.max(44, Math.round(bounds.height + 16));
-
   state.selectedLayerId = layerId;
   state.inlineEditingLayerId = layerId;
   syncInspectorFromSelection();
 
   dom.inlineTextEditor.value = layer.text;
-  dom.inlineTextEditor.style.left = `${left}px`;
-  dom.inlineTextEditor.style.top = `${top}px`;
-  dom.inlineTextEditor.style.width = `${width}px`;
-  dom.inlineTextEditor.style.height = `${height}px`;
+  positionInlineTextEditorForLayer(layer);
   applyInlineEditorVisuals(layer);
   dom.inlineTextEditor.classList.remove("is-hidden");
   dom.inlineTextEditor.focus();
   dom.inlineTextEditor.select();
   setStatus("Editing text. Press Ctrl/Cmd+Enter to apply, Esc to cancel.");
   render();
+}
+
+function positionInlineTextEditorForLayer(layer) {
+  const bounds = getLayerBounds(layer);
+  if (!bounds) {
+    return;
+  }
+
+  const canvasBounds = getCanvasBoundsInWrapper();
+  const scale = getCanvasDisplayScale();
+  const left = Math.max(4, Math.round(canvasBounds.x + bounds.x * scale.x));
+  const top = Math.max(4, Math.round(canvasBounds.y + bounds.y * scale.y));
+  const width = Math.max(120, Math.round(bounds.width * scale.x + 24));
+  const height = Math.max(44, Math.round(bounds.height * scale.y + 16));
+
+  dom.inlineTextEditor.style.left = `${left}px`;
+  dom.inlineTextEditor.style.top = `${top}px`;
+  dom.inlineTextEditor.style.width = `${width}px`;
+  dom.inlineTextEditor.style.height = `${height}px`;
 }
 
 function getCanvasPoint(event, options) {
@@ -548,7 +746,7 @@ function clearPointerTracking() {
   state.lastPointerClient = null;
 }
 
-function getAutoScrollDelta(clientCoord, min, max) {
+function getAutoScrollVelocity(clientCoord, min, max) {
   const span = Math.max(1, max - min);
   const edgeZone = clamp(span * CROP_AUTO_SCROLL_ZONE_RATIO, CROP_AUTO_SCROLL_EDGE_MIN_PX, CROP_AUTO_SCROLL_EDGE_MAX_PX);
   let signedRatio = 0;
@@ -564,11 +762,11 @@ function getAutoScrollDelta(clientCoord, min, max) {
   }
 
   const magnitude = Math.pow(Math.abs(signedRatio), CROP_AUTO_SCROLL_CURVE);
-  const step = CROP_AUTO_SCROLL_MIN_STEP + magnitude * (CROP_AUTO_SCROLL_MAX_STEP - CROP_AUTO_SCROLL_MIN_STEP);
-  return step * Math.sign(signedRatio);
+  const speed = CROP_AUTO_SCROLL_MIN_SPEED + magnitude * (CROP_AUTO_SCROLL_MAX_SPEED - CROP_AUTO_SCROLL_MIN_SPEED);
+  return speed * Math.sign(signedRatio);
 }
 
-function applyCropAutoScrollStep() {
+function applyCropAutoScrollStep(elapsedMs) {
   if (state.tool !== "crop" || !state.draft || !state.lastPointerClient) {
     return;
   }
@@ -578,8 +776,9 @@ function applyCropAutoScrollStep() {
     return;
   }
 
-  const deltaX = getAutoScrollDelta(state.lastPointerClient.x, wrapperRect.left, wrapperRect.right);
-  const deltaY = getAutoScrollDelta(state.lastPointerClient.y, wrapperRect.top, wrapperRect.bottom);
+  const deltaSeconds = Math.max(0.001, Math.min(0.05, elapsedMs / 1000));
+  const deltaX = getAutoScrollVelocity(state.lastPointerClient.x, wrapperRect.left, wrapperRect.right) * deltaSeconds;
+  const deltaY = getAutoScrollVelocity(state.lastPointerClient.y, wrapperRect.top, wrapperRect.bottom) * deltaSeconds;
   if (deltaX === 0 && deltaY === 0) {
     return;
   }
@@ -608,12 +807,15 @@ function startCropAutoScroll() {
     return;
   }
 
-  const tick = () => {
+  const tick = (timestamp) => {
     state.cropAutoScrollFrame = null;
     if (state.activePointerId === null || state.tool !== "crop" || !state.draft) {
+      state.cropAutoScrollLastAt = null;
       return;
     }
-    applyCropAutoScrollStep();
+    const previousTimestamp = state.cropAutoScrollLastAt ?? timestamp;
+    state.cropAutoScrollLastAt = timestamp;
+    applyCropAutoScrollStep(timestamp - previousTimestamp);
     startCropAutoScroll();
   };
 
@@ -622,10 +824,12 @@ function startCropAutoScroll() {
 
 function stopCropAutoScroll() {
   if (state.cropAutoScrollFrame === null) {
+    state.cropAutoScrollLastAt = null;
     return;
   }
   cancelAnimationFrame(state.cropAutoScrollFrame);
   state.cropAutoScrollFrame = null;
+  state.cropAutoScrollLastAt = null;
 }
 
 function snapshot() {
@@ -693,6 +897,7 @@ function resizeCanvasToBase() {
   }
   dom.canvas.width = state.baseImage.width;
   dom.canvas.height = state.baseImage.height;
+  updateCanvasDisplaySize();
 }
 
 function drawArrow(ctx2d, x1, y1, x2, y2, strokeWidth, color) {
@@ -764,35 +969,247 @@ function getTextBounds(layer, ctx2d, overrides = {}) {
   };
 }
 
-function drawPixelatedBlur(ctx2d, x, y, width, height, strength) {
-  const regionW = Math.max(1, Math.round(width));
-  const regionH = Math.max(1, Math.round(height));
-  if (regionW < 2 || regionH < 2) {
+function getBoundsCenter(bounds) {
+  return {
+    x: bounds.x + bounds.width / 2,
+    y: bounds.y + bounds.height / 2
+  };
+}
+
+function rotatePointAround(point, center, angleRadians) {
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const cos = Math.cos(angleRadians);
+  const sin = Math.sin(angleRadians);
+  return {
+    x: center.x + dx * cos - dy * sin,
+    y: center.y + dx * sin + dy * cos
+  };
+}
+
+function getLayerBaseBounds(layer) {
+  if (layer.kind === "stroke" || layer.kind === "highlight") {
+    if (!layer.points.length) {
+      return null;
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const point of layer.points) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+    return {
+      x: minX - layer.width,
+      y: minY - layer.width,
+      width: maxX - minX + layer.width * 2,
+      height: maxY - minY + layer.width * 2
+    };
+  }
+
+  if (layer.kind === "shape" || layer.kind === "blur") {
+    return normalizeRect(layer.x1, layer.y1, layer.x2, layer.y2);
+  }
+
+  if (layer.kind === "text") {
+    const textBounds = getTextBounds(layer, ctx);
+    return {
+      x: textBounds.x,
+      y: textBounds.y,
+      width: textBounds.width,
+      height: textBounds.height
+    };
+  }
+
+  return null;
+}
+
+function getRotatedBounds(bounds, rotation) {
+  const angle = sanitizeRotation(rotation);
+  if (!angle) {
+    return bounds;
+  }
+
+  const center = getBoundsCenter(bounds);
+  const corners = [
+    { x: bounds.x, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+    { x: bounds.x, y: bounds.y + bounds.height }
+  ].map((point) => rotatePointAround(point, center, toRadians(angle)));
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const point of corners) {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY
+  };
+}
+
+function getLayerPointInLocalSpace(point, layer, bounds = getLayerBaseBounds(layer)) {
+  if (!bounds || !isRotatableLayer(layer)) {
+    return point;
+  }
+
+  const rotation = getLayerRotation(layer);
+  if (!rotation) {
+    return point;
+  }
+
+  return rotatePointAround(point, getBoundsCenter(bounds), -toRadians(rotation));
+}
+
+function withLayerRotation(ctx2d, layer, drawCallback) {
+  if (!isRotatableLayer(layer)) {
+    drawCallback();
     return;
   }
 
+  const rotation = getLayerRotation(layer);
+  const bounds = getLayerBaseBounds(layer);
+  if (!rotation || !bounds) {
+    drawCallback();
+    return;
+  }
+
+  const center = getBoundsCenter(bounds);
+  ctx2d.save();
+  ctx2d.translate(center.x, center.y);
+  ctx2d.rotate(toRadians(rotation));
+  ctx2d.translate(-center.x, -center.y);
+  drawCallback();
+  ctx2d.restore();
+}
+
+function captureCanvasRegion(ctx2d, x, y, width, height, padding = 0) {
+  const regionW = Math.max(1, Math.round(width));
+  const regionH = Math.max(1, Math.round(height));
+  if (regionW < 2 || regionH < 2) {
+    return null;
+  }
+
+  const regionX = Math.round(x);
+  const regionY = Math.round(y);
+  const sampleCanvas = document.createElement("canvas");
+  sampleCanvas.width = regionW + padding * 2;
+  sampleCanvas.height = regionH + padding * 2;
+  const sampleCtx = sampleCanvas.getContext("2d");
+  if (!sampleCtx) {
+    return null;
+  }
+
+  const sourceLeft = regionX - padding;
+  const sourceTop = regionY - padding;
+  const sampleX = clamp(sourceLeft, 0, ctx2d.canvas.width);
+  const sampleY = clamp(sourceTop, 0, ctx2d.canvas.height);
+  const destX = sampleX - sourceLeft;
+  const destY = sampleY - sourceTop;
+  const availableW = Math.min(ctx2d.canvas.width - sampleX, sampleCanvas.width - destX);
+  const availableH = Math.min(ctx2d.canvas.height - sampleY, sampleCanvas.height - destY);
+
+  if (availableW > 0 && availableH > 0) {
+    sampleCtx.drawImage(ctx2d.canvas, sampleX, sampleY, availableW, availableH, destX, destY, availableW, availableH);
+  }
+
+  return {
+    canvas: sampleCanvas,
+    regionX,
+    regionY,
+    regionW,
+    regionH,
+    padding
+  };
+}
+
+function drawPixelatedBlur(ctx2d, x, y, width, height, strength) {
+  const sourceRegion = captureCanvasRegion(ctx2d, x, y, width, height);
+  if (!sourceRegion) {
+    return;
+  }
+
+  const { canvas: sourceCanvas, regionX, regionY, regionW, regionH } = sourceRegion;
   const pixelSize = Math.max(4, Math.round(strength));
   const sampleW = Math.max(1, Math.floor(regionW / pixelSize));
   const sampleH = Math.max(1, Math.floor(regionH / pixelSize));
-
-  const sourceCanvas = document.createElement("canvas");
-  sourceCanvas.width = regionW;
-  sourceCanvas.height = regionH;
-  const sourceCtx = sourceCanvas.getContext("2d");
-  sourceCtx.drawImage(ctx2d.canvas, x, y, regionW, regionH, 0, 0, regionW, regionH);
 
   const sampleCanvas = document.createElement("canvas");
   sampleCanvas.width = sampleW;
   sampleCanvas.height = sampleH;
   const sampleCtx = sampleCanvas.getContext("2d");
+  if (!sampleCtx) {
+    return;
+  }
   sampleCtx.imageSmoothingEnabled = true;
   sampleCtx.drawImage(sourceCanvas, 0, 0, sampleW, sampleH);
 
   ctx2d.save();
   ctx2d.imageSmoothingEnabled = false;
-  ctx2d.drawImage(sampleCanvas, 0, 0, sampleW, sampleH, x, y, regionW, regionH);
+  ctx2d.drawImage(sampleCanvas, 0, 0, sampleW, sampleH, regionX, regionY, regionW, regionH);
   ctx2d.imageSmoothingEnabled = true;
   ctx2d.restore();
+}
+
+function drawGaussianBlur(ctx2d, x, y, width, height, strength) {
+  const blurRadius = clamp(Math.round(strength), 2, 32);
+  const padding = Math.max(8, Math.ceil(blurRadius * 3));
+  const sourceRegion = captureCanvasRegion(ctx2d, x, y, width, height, padding);
+  if (!sourceRegion) {
+    return;
+  }
+
+  const blurredCanvas = document.createElement("canvas");
+  blurredCanvas.width = sourceRegion.canvas.width;
+  blurredCanvas.height = sourceRegion.canvas.height;
+  const blurredCtx = blurredCanvas.getContext("2d");
+  if (!blurredCtx || !("filter" in blurredCtx)) {
+    drawPixelatedBlur(ctx2d, x, y, width, height, strength);
+    return;
+  }
+
+  blurredCtx.filter = `blur(${blurRadius}px)`;
+  blurredCtx.drawImage(sourceRegion.canvas, 0, 0);
+  blurredCtx.filter = "none";
+
+  ctx2d.save();
+  ctx2d.beginPath();
+  ctx2d.rect(sourceRegion.regionX, sourceRegion.regionY, sourceRegion.regionW, sourceRegion.regionH);
+  ctx2d.clip();
+  ctx2d.drawImage(
+    blurredCanvas,
+    sourceRegion.padding,
+    sourceRegion.padding,
+    sourceRegion.regionW,
+    sourceRegion.regionH,
+    sourceRegion.regionX,
+    sourceRegion.regionY,
+    sourceRegion.regionW,
+    sourceRegion.regionH
+  );
+  ctx2d.restore();
+}
+
+function drawBlurEffect(ctx2d, x, y, width, height, layer) {
+  const strength = layer.strength ?? state.style.blurStrength;
+  const mode = getLayerBlurMode(layer);
+  if (mode === "pixelate") {
+    drawPixelatedBlur(ctx2d, x, y, width, height, strength);
+    return;
+  }
+  drawGaussianBlur(ctx2d, x, y, width, height, strength);
 }
 
 function drawLayer(ctx2d, layer, options = {}) {
@@ -805,85 +1222,89 @@ function drawLayer(ctx2d, layer, options = {}) {
       ctx2d.restore();
       return;
     }
-    ctx2d.strokeStyle = layer.color;
-    ctx2d.lineWidth = layer.width;
-    ctx2d.lineCap = "round";
-    ctx2d.lineJoin = "round";
-    ctx2d.beginPath();
-    ctx2d.moveTo(layer.points[0].x, layer.points[0].y);
-    for (let i = 1; i < layer.points.length; i += 1) {
-      const point = layer.points[i];
-      ctx2d.lineTo(point.x, point.y);
-    }
-    ctx2d.stroke();
+    withLayerRotation(ctx2d, layer, () => {
+      ctx2d.strokeStyle = layer.color;
+      ctx2d.lineWidth = layer.width;
+      ctx2d.lineCap = "round";
+      ctx2d.lineJoin = "round";
+      ctx2d.beginPath();
+      ctx2d.moveTo(layer.points[0].x, layer.points[0].y);
+      for (let i = 1; i < layer.points.length; i += 1) {
+        const point = layer.points[i];
+        ctx2d.lineTo(point.x, point.y);
+      }
+      ctx2d.stroke();
+    });
     ctx2d.restore();
     return;
   }
 
   if (layer.kind === "shape") {
-    const { x, y, width, height } = normalizeRect(layer.x1, layer.y1, layer.x2, layer.y2);
-    ctx2d.strokeStyle = layer.stroke;
-    ctx2d.fillStyle = layer.fill || "transparent";
-    ctx2d.lineWidth = layer.strokeWidth;
+    withLayerRotation(ctx2d, layer, () => {
+      const { x, y, width, height } = normalizeRect(layer.x1, layer.y1, layer.x2, layer.y2);
+      ctx2d.strokeStyle = layer.stroke;
+      ctx2d.fillStyle = layer.fill || "transparent";
+      ctx2d.lineWidth = layer.strokeWidth;
 
-    if (layer.shape === "rect") {
-      if (layer.fill) {
-        ctx2d.fillRect(x, y, width, height);
+      if (layer.shape === "rect") {
+        if (layer.fill) {
+          ctx2d.fillRect(x, y, width, height);
+        }
+        ctx2d.strokeRect(x, y, width, height);
+      } else if (layer.shape === "ellipse") {
+        ctx2d.beginPath();
+        ctx2d.ellipse(x + width / 2, y + height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
+        if (layer.fill) {
+          ctx2d.fill();
+        }
+        ctx2d.stroke();
+      } else if (layer.shape === "line") {
+        ctx2d.beginPath();
+        ctx2d.moveTo(layer.x1, layer.y1);
+        ctx2d.lineTo(layer.x2, layer.y2);
+        ctx2d.stroke();
+      } else if (layer.shape === "arrow") {
+        drawArrow(ctx2d, layer.x1, layer.y1, layer.x2, layer.y2, layer.strokeWidth, layer.stroke);
       }
-      ctx2d.strokeRect(x, y, width, height);
-    } else if (layer.shape === "ellipse") {
-      ctx2d.beginPath();
-      ctx2d.ellipse(x + width / 2, y + height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
-      if (layer.fill) {
-        ctx2d.fill();
-      }
-      ctx2d.stroke();
-    } else if (layer.shape === "line") {
-      ctx2d.beginPath();
-      ctx2d.moveTo(layer.x1, layer.y1);
-      ctx2d.lineTo(layer.x2, layer.y2);
-      ctx2d.stroke();
-    } else if (layer.shape === "arrow") {
-      drawArrow(ctx2d, layer.x1, layer.y1, layer.x2, layer.y2, layer.strokeWidth, layer.stroke);
-    }
+    });
     ctx2d.restore();
     return;
   }
 
   if (layer.kind === "text") {
-    const fontSize = layer.fontSize ?? state.style.fontSize;
-    const fontFamily = layer.fontFamily ?? state.style.fontFamily;
-    const bounds = getTextBounds(layer, ctx2d);
-    const textWidth = bounds.metrics.width;
-    const textHeight = bounds.metrics.height;
-    const textTop = bounds.y + bounds.padY;
-    const padX = layer.sticky ? 10 : 2;
-    const padY = layer.sticky ? 8 : 2;
+    withLayerRotation(ctx2d, layer, () => {
+      const fontSize = layer.fontSize ?? state.style.fontSize;
+      const fontFamily = layer.fontFamily ?? state.style.fontFamily;
+      const bounds = getTextBounds(layer, ctx2d);
+      const textWidth = bounds.metrics.width;
+      const textHeight = bounds.metrics.height;
+      const textTop = bounds.y + bounds.padY;
+      const padX = layer.sticky ? 10 : 2;
+      const padY = layer.sticky ? 8 : 2;
 
-    ctx2d.font = `600 ${fontSize}px ${fontFamily}`;
+      ctx2d.font = `600 ${fontSize}px ${fontFamily}`;
 
-    if (layer.sticky) {
-      ctx2d.fillStyle = layer.background || "#fff2a8";
-      ctx2d.fillRect(layer.x - padX, textTop - padY, textWidth + padX * 2, textHeight + padY * 2);
-      ctx2d.strokeStyle = "rgba(0,0,0,0.2)";
-      ctx2d.lineWidth = 1;
-      ctx2d.strokeRect(layer.x - padX, textTop - padY, textWidth + padX * 2, textHeight + padY * 2);
-    }
+      if (layer.sticky) {
+        ctx2d.fillStyle = layer.background || "#fff2a8";
+        ctx2d.fillRect(layer.x - padX, textTop - padY, textWidth + padX * 2, textHeight + padY * 2);
+        ctx2d.strokeStyle = "rgba(0,0,0,0.2)";
+        ctx2d.lineWidth = 1;
+        ctx2d.strokeRect(layer.x - padX, textTop - padY, textWidth + padX * 2, textHeight + padY * 2);
+      }
 
-    ctx2d.fillStyle = layer.color;
-    for (let index = 0; index < bounds.metrics.lines.length; index += 1) {
-      const baselineY = layer.y + index * bounds.metrics.lineHeight;
-      ctx2d.fillText(bounds.metrics.lines[index], layer.x, baselineY);
-    }
+      ctx2d.fillStyle = layer.color;
+      for (let index = 0; index < bounds.metrics.lines.length; index += 1) {
+        const baselineY = layer.y + index * bounds.metrics.lineHeight;
+        ctx2d.fillText(bounds.metrics.lines[index], layer.x, baselineY);
+      }
+    });
     ctx2d.restore();
     return;
   }
 
   if (layer.kind === "blur") {
     const { x, y, width, height } = normalizeRect(layer.x1, layer.y1, layer.x2, layer.y2);
-    drawPixelatedBlur(ctx2d, x, y, width, height, layer.strength ?? state.style.blurStrength);
-    ctx2d.fillStyle = "rgba(255, 255, 255, 0.08)";
-    ctx2d.fillRect(x, y, width, height);
+    drawBlurEffect(ctx2d, x, y, width, height, layer);
     if (!options.forExport && options.showBlurFrame) {
       ctx2d.strokeStyle = "rgba(80, 80, 80, 0.35)";
       ctx2d.lineWidth = 1.25;
@@ -1127,6 +1548,14 @@ function updateMetadataView() {
     rows.push(["Frames", String(metadata.captureDiagnostics.frameCount ?? "")]);
     rows.push(["Overlap", `${metadata.captureDiagnostics.overlapCssPx ?? ""}px`]);
     rows.push(["Hidden Pinned", String(metadata.captureDiagnostics.hiddenPinnedCount ?? "")]);
+    if (metadata.captureDiagnostics.capturePageHeight) {
+      rows.push(["Captured Height", `${metadata.captureDiagnostics.capturePageHeight}px`]);
+    }
+    if (metadata.captureDiagnostics.measuredPageHeight) {
+      rows.push(["Measured Height", `${metadata.captureDiagnostics.measuredPageHeight}px`]);
+    }
+    rows.push(["Growth Capped", metadata.captureDiagnostics.cappedDynamicGrowth ? "yes" : "no"]);
+    rows.push(["Hit Frame Limit", metadata.captureDiagnostics.hitFrameLimit ? "yes" : "no"]);
   }
 
   for (const [key, value] of rows) {
@@ -1145,6 +1574,33 @@ function getResizeHandlePoints(bounds) {
     sw: { x: bounds.x, y: bounds.y + bounds.height },
     se: { x: bounds.x + bounds.width, y: bounds.y + bounds.height }
   };
+}
+
+function getRotationHandlePoint(bounds) {
+  return {
+    x: bounds.x + bounds.width / 2,
+    y: bounds.y - ROTATE_HANDLE_OFFSET
+  };
+}
+
+function drawRotationHandle(bounds) {
+  const handle = getRotationHandlePoint(bounds);
+  const stemTopY = bounds.y;
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(13, 102, 208, 0.95)";
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(handle.x, stemTopY);
+  ctx.lineTo(handle.x, handle.y + ROTATE_HANDLE_RADIUS);
+  ctx.stroke();
+
+  ctx.fillStyle = "#f3f9ff";
+  ctx.beginPath();
+  ctx.arc(handle.x, handle.y, ROTATE_HANDLE_RADIUS, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawResizeHandles(bounds) {
@@ -1190,6 +1646,68 @@ function getResizeHandleAtPoint(point) {
   }
 
   return null;
+}
+
+function getRotationHandleAtPoint(point) {
+  if (state.tool !== "move") {
+    return null;
+  }
+
+  const selected = getSelectedLayer();
+  if (!selected || !isRotatableLayer(selected)) {
+    return null;
+  }
+
+  const bounds = getLayerBounds(selected);
+  if (!bounds) {
+    return null;
+  }
+
+  const handlePoint = getRotationHandlePoint(bounds);
+  if (Math.hypot(point.x - handlePoint.x, point.y - handlePoint.y) <= ROTATE_HANDLE_RADIUS + 4) {
+    return { layerId: selected.id, bounds, handlePoint };
+  }
+
+  return null;
+}
+
+function startLayerRotation(rotateHit, point) {
+  const layer = state.layers.find((item) => item.id === rotateHit.layerId);
+  const baseBounds = layer ? getLayerBaseBounds(layer) : null;
+  if (!layer || !baseBounds) {
+    return;
+  }
+
+  const center = getBoundsCenter(baseBounds);
+  state.rotatingLayer = {
+    layerId: layer.id,
+    centerX: center.x,
+    centerY: center.y,
+    startPointerAngle: Math.atan2(point.y - center.y, point.x - center.x),
+    startRotation: getLayerRotation(layer)
+  };
+  state.rotatingSnapshot = snapshot();
+  state.rotatingDidChange = false;
+  state.pointerOrigin = point;
+  dom.canvas.style.cursor = "grabbing";
+  setStatus("Rotating layer. Drag the handle. Press Esc to cancel.");
+}
+
+function applyLayerRotation(point) {
+  if (!state.rotatingLayer) {
+    return;
+  }
+
+  const layer = state.layers.find((item) => item.id === state.rotatingLayer.layerId);
+  if (!layer) {
+    return;
+  }
+
+  const currentAngle = Math.atan2(point.y - state.rotatingLayer.centerY, point.x - state.rotatingLayer.centerX);
+  const angleDelta = currentAngle - state.rotatingLayer.startPointerAngle;
+  const nextRotation = sanitizeRotation(state.rotatingLayer.startRotation + (angleDelta * 180) / Math.PI);
+  layer.rotation = nextRotation;
+  state.rotatingDidChange = Math.abs(nextRotation - state.rotatingLayer.startRotation) >= 0.25;
 }
 
 function startLayerResize(handleHit, point) {
@@ -1305,6 +1823,9 @@ function render() {
   ctx.clearRect(0, 0, dom.canvas.width, dom.canvas.height);
   ctx.drawImage(state.baseImage, 0, 0);
   for (const layer of state.layers) {
+    if (isInlineEditing() && layer.id === state.inlineEditingLayerId && layer.kind === "text") {
+      continue;
+    }
     drawLayer(ctx, layer, {
       forExport: false,
       showBlurFrame: layer.kind === "blur" && state.selectedLayerId === layer.id
@@ -1329,6 +1850,9 @@ function render() {
         ctx.setLineDash([6, 4]);
         ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
         if (state.tool === "move" && !isInlineEditing()) {
+          if (isRotatableLayer(selectedLayer)) {
+            drawRotationHandle(bounds);
+          }
           drawResizeHandles(bounds);
         }
         ctx.restore();
@@ -1336,61 +1860,41 @@ function render() {
     }
   }
 
+  if (isInlineEditing()) {
+    const editingLayer = state.layers.find((layer) => layer.id === state.inlineEditingLayerId && layer.kind === "text");
+    if (editingLayer) {
+      positionInlineTextEditorForLayer(editingLayer);
+      applyInlineEditorVisuals(editingLayer);
+    }
+  }
+
   updateLayersList();
 }
 
 function getLayerBounds(layer) {
-  if (layer.kind === "stroke" || layer.kind === "highlight") {
-    if (!layer.points.length) {
-      return null;
-    }
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const point of layer.points) {
-      minX = Math.min(minX, point.x);
-      minY = Math.min(minY, point.y);
-      maxX = Math.max(maxX, point.x);
-      maxY = Math.max(maxY, point.y);
-    }
-    return {
-      x: minX - layer.width,
-      y: minY - layer.width,
-      width: maxX - minX + layer.width * 2,
-      height: maxY - minY + layer.width * 2
-    };
+  const bounds = getLayerBaseBounds(layer);
+  if (!bounds) {
+    return null;
   }
-
-  if (layer.kind === "shape" || layer.kind === "blur") {
-    return normalizeRect(layer.x1, layer.y1, layer.x2, layer.y2);
+  if (!isRotatableLayer(layer) || !getLayerRotation(layer)) {
+    return bounds;
   }
-
-  if (layer.kind === "text") {
-    const textBounds = getTextBounds(layer, ctx);
-    return {
-      x: textBounds.x,
-      y: textBounds.y,
-      width: textBounds.width,
-      height: textBounds.height
-    };
-  }
-
-  return null;
+  return getRotatedBounds(bounds, getLayerRotation(layer));
 }
 
 function findTopLayerAtPoint(point) {
   for (let i = state.layers.length - 1; i >= 0; i -= 1) {
     const layer = state.layers[i];
-    const bounds = getLayerBounds(layer);
-    if (!bounds) {
+    const baseBounds = getLayerBaseBounds(layer);
+    if (!baseBounds) {
       continue;
     }
+    const localPoint = getLayerPointInLocalSpace(point, layer, baseBounds);
     const inside =
-      point.x >= bounds.x &&
-      point.x <= bounds.x + bounds.width &&
-      point.y >= bounds.y &&
-      point.y <= bounds.y + bounds.height;
+      localPoint.x >= baseBounds.x &&
+      localPoint.x <= baseBounds.x + baseBounds.width &&
+      localPoint.y >= baseBounds.y &&
+      localPoint.y <= baseBounds.y + baseBounds.height;
     if (inside) {
       return layer.id;
     }
@@ -1457,6 +1961,9 @@ async function applyCropLayer(cropLayer) {
 
 function commitLayer(layer) {
   layer.blendMode = getLayerBlendMode(layer);
+  if (isRotatableLayer(layer)) {
+    layer.rotation = sanitizeRotation(layer.rotation);
+  }
   pushHistory();
   state.layers.push(layer);
   state.selectedLayerId = layer.id;
@@ -1468,7 +1975,7 @@ function startDraft(point) {
   const width = state.style.lineWidth;
   const stroke = state.style.strokeColor;
   const fill = state.style.fillColor;
-  const blendMode = normalizeBlendMode(state.style.blendMode);
+  const blendMode = getDraftBlendModeForTool(state.tool);
 
   if (state.tool === "pen") {
     state.draft = createStrokeLayer({
@@ -1492,7 +1999,7 @@ function startDraft(point) {
       color: highlightColor,
       width: highlightWidth,
       opacity: Math.min(highlightOpacity, 0.75),
-      blendMode: blendMode === "normal" ? "multiply" : blendMode,
+      blendMode,
       variant: "highlight"
     });
     return;
@@ -1506,6 +2013,7 @@ function startDraft(point) {
       y2: point.y,
       opacity,
       strength: state.style.blurStrength,
+      mode: normalizeBlurMode(state.style.blurMode),
       blendMode
     });
     return;
@@ -1592,11 +2100,11 @@ async function finalizeDraft() {
 
 function insertTextLayerAtPoint(point, sticky, { openEditor = false } = {}) {
   const defaultText = sticky ? "Sticky note" : "Note";
-  const text = (state.style.textContent || "").trim() || defaultText;
+  const blendMode = getDraftBlendModeForTool(sticky ? "sticky" : "text");
 
   commitLayer(
     createTextLayer({
-      text,
+      text: defaultText,
       x: point.x,
       y: point.y,
       color: state.style.strokeColor,
@@ -1605,7 +2113,7 @@ function insertTextLayerAtPoint(point, sticky, { openEditor = false } = {}) {
       fontFamily: state.style.fontFamily,
       sticky,
       opacity: state.style.opacity,
-      blendMode: normalizeBlendMode(state.style.blendMode)
+      blendMode
     })
   );
 
@@ -1770,6 +2278,12 @@ function handleCanvasPointerDown(event) {
   }
 
   if (state.tool === "move") {
+    const rotateHit = getRotationHandleAtPoint(point);
+    if (rotateHit) {
+      startLayerRotation(rotateHit, point);
+      return;
+    }
+
     const handleHit = getResizeHandleAtPoint(point);
     if (handleHit) {
       startLayerResize(handleHit, point);
@@ -1818,6 +2332,12 @@ function handleCanvasPointerMove(event) {
     clampToCanvas: state.tool === "crop" && Boolean(state.draft)
   });
 
+  if (state.rotatingLayer) {
+    applyLayerRotation(point);
+    render();
+    return;
+  }
+
   if (state.resizingLayer) {
     applyLayerResize(point);
     render();
@@ -1850,6 +2370,11 @@ function handleCanvasPointerMove(event) {
   }
 
   if (state.tool === "move") {
+    const rotateHit = getRotationHandleAtPoint(point);
+    if (rotateHit) {
+      dom.canvas.style.cursor = "grab";
+      return;
+    }
     const handleHit = getResizeHandleAtPoint(point);
     if (handleHit) {
       dom.canvas.style.cursor = cursorForResizeHandle(handleHit.handle);
@@ -1865,6 +2390,20 @@ async function handleCanvasPointerUp(event) {
   }
   releaseActivePointerCapture();
   clearPointerTracking();
+
+  if (state.rotatingLayer) {
+    if (state.rotatingDidChange && state.rotatingSnapshot) {
+      pushHistorySnapshot(state.rotatingSnapshot);
+      syncInspectorFromSelection();
+    }
+    state.rotatingLayer = null;
+    state.rotatingSnapshot = null;
+    state.rotatingDidChange = false;
+    state.pointerOrigin = null;
+    dom.canvas.style.cursor = "move";
+    render();
+    return;
+  }
 
   if (state.resizingLayer) {
     if (state.resizingDidChange && state.resizingSnapshot) {
@@ -1943,11 +2482,14 @@ async function loadSession() {
   dom.canvasWrapper.classList.remove("is-hidden");
 
   updateMetadataView();
+  updateZoomReadout();
   updateQualityVisibility();
   dom.blendMode.value = normalizeBlendMode(state.style.blendMode);
   dom.blurStrength.value = String(state.style.blurStrength);
+  dom.blurMode.value = normalizeBlurMode(state.style.blurMode);
   dom.fontFamily.value = state.style.fontFamily;
   dom.textContent.value = state.style.textContent;
+  syncColorControls();
   syncInspectorFromSelection();
   render();
   setStatus("Session loaded.");
@@ -1967,16 +2509,29 @@ function bindEvents() {
     toolButton.addEventListener("click", () => setTool(toolButton.dataset.tool));
   }
 
+  dom.zoomRange.addEventListener("input", (event) => {
+    setZoom(Number(event.target.value), { preserveCenter: true });
+  });
   dom.strokeColor.addEventListener("input", (event) => {
-    state.style.strokeColor = event.target.value;
-    applyStyleToSelectedLayer();
-    render();
+    setStrokeColor(event.target.value);
   });
   dom.fillColor.addEventListener("input", (event) => {
-    state.style.fillColor = event.target.value;
-    applyStyleToSelectedLayer();
-    render();
+    setFillColor(event.target.value);
   });
+  dom.quickStrokeColor.addEventListener("input", (event) => {
+    setStrokeColor(event.target.value);
+  });
+  dom.quickFillColor.addEventListener("input", (event) => {
+    setFillColor(event.target.value);
+  });
+  dom.swapColorsButton.addEventListener("click", () => {
+    swapStyleColors();
+  });
+  for (const swatch of dom.colorSwatches) {
+    swatch.addEventListener("click", () => {
+      setStrokeColor(swatch.dataset.colorSwatch || state.style.strokeColor);
+    });
+  }
   dom.strokeWidth.addEventListener("input", (event) => {
     state.style.lineWidth = Number(event.target.value);
     applyStyleToSelectedLayer();
@@ -1999,6 +2554,11 @@ function bindEvents() {
   });
   dom.blurStrength.addEventListener("input", (event) => {
     state.style.blurStrength = Number(event.target.value);
+    applyStyleToSelectedLayer();
+    render();
+  });
+  dom.blurMode.addEventListener("change", (event) => {
+    state.style.blurMode = normalizeBlurMode(event.target.value);
     applyStyleToSelectedLayer();
     render();
   });
@@ -2111,6 +2671,8 @@ function bindEvents() {
 
 async function bootstrap() {
   applyTheme(getPreferredTheme());
+  updateZoomReadout();
+  syncColorControls();
   bindEvents();
   setTool("move");
   try {

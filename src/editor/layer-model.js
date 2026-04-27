@@ -11,6 +11,7 @@ export function createStrokeLayer({
   color,
   width,
   opacity,
+  rotation = 0,
   blendMode = "normal",
   variant = "stroke"
 }) {
@@ -21,6 +22,7 @@ export function createStrokeLayer({
     color,
     width,
     opacity,
+    rotation,
     blendMode
   };
 }
@@ -35,6 +37,7 @@ export function createShapeLayer({
   fill,
   strokeWidth,
   opacity,
+  rotation = 0,
   blendMode = "normal"
 }) {
   return {
@@ -49,6 +52,7 @@ export function createShapeLayer({
     fill,
     strokeWidth,
     opacity,
+    rotation,
     blendMode
   };
 }
@@ -63,6 +67,7 @@ export function createTextLayer({
   fontFamily,
   sticky,
   opacity,
+  rotation = 0,
   blendMode = "normal"
 }) {
   return {
@@ -77,11 +82,22 @@ export function createTextLayer({
     fontFamily,
     sticky,
     opacity,
+    rotation,
     blendMode
   };
 }
 
-export function createBlurLayer({ x1, y1, x2, y2, opacity, strength, blendMode = "normal" }) {
+export function createBlurLayer({
+  x1,
+  y1,
+  x2,
+  y2,
+  opacity,
+  strength,
+  mode = "gaussian",
+  rotation = 0,
+  blendMode = "normal"
+}) {
   return {
     id: createLayerId(),
     kind: "blur",
@@ -91,6 +107,8 @@ export function createBlurLayer({ x1, y1, x2, y2, opacity, strength, blendMode =
     y2,
     opacity,
     strength,
+    mode,
+    rotation,
     blendMode
   };
 }

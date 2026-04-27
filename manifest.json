@@ -3,13 +3,23 @@
   "name": "ScreenShip",
   "version": "0.1.0",
   "description": "Free, local-first screenshot capture and annotation for Chrome.",
-  "permissions": ["activeTab", "scripting", "tabs", "storage", "downloads", "clipboardWrite"],
+  "icons": {
+    "16": "img/icon-16.png",
+    "32": "img/icon-32.png",
+    "48": "img/icon-48.png",
+    "128": "img/icon-128.png"
+  },
+  "permissions": ["activeTab", "scripting", "tabs", "storage", "clipboardWrite"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "src/background/service-worker.js",
     "type": "module"
   },
   "action": {
+    "default_icon": {
+      "16": "img/icon-16.png",
+      "32": "img/icon-32.png"
+    },
     "default_title": "ScreenShip",
     "default_popup": "src/popup/popup.html"
   },
@@ -21,4 +31,3 @@
     }
   ]
 }
-

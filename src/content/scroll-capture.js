@@ -14,6 +14,8 @@
   const RETRY_DELAY_MS = 120;
   const MAX_FRAME_RETRIES = 2;
   const MAX_CAPTURE_FRAMES = 180;
+  const MAX_DYNAMIC_PAGE_GROWTH_VIEWPORTS = 1.5;
+  const MIN_DYNAMIC_PAGE_GROWTH_PX = 960;
   let isCapturing = false;
 
   function sleep(ms) {
@@ -150,6 +152,13 @@
     return Math.min(240, Math.max(64, base + pinnedBoost));
   }
 
+  function chooseGrowthAllowance(viewportHeight) {
+    return Math.max(
+      MIN_DYNAMIC_PAGE_GROWTH_PX,
+      Math.round(viewportHeight * MAX_DYNAMIC_PAGE_GROWTH_VIEWPORTS)
+    );
+  }
+
   async function requestVisibleFrame(scrollY) {
     let lastError = null;
 
@@ -236,19 +245,24 @@
     const overlap = chooseOverlap(viewportHeight, pinned.hiddenCount);
     const step = Math.max(64, viewportHeight - overlap);
     const frames = [];
-    let pageHeight = getPageHeight();
+    let measuredPageHeight = getPageHeight();
+    let capturePageHeight = measuredPageHeight;
     const seenPositions = new Set();
     const restorePinnedElements = pinned.restore;
 
     try {
       await settleAfterScroll(0);
+      measuredPageHeight = getPageHeight();
+      capturePageHeight = measuredPageHeight;
+      const growthAllowance = chooseGrowthAllowance(viewportHeight);
+      const maxCapturePageHeight = capturePageHeight + growthAllowance;
 
       let targetY = 0;
       while (true) {
         if (frames.length >= MAX_CAPTURE_FRAMES) {
           break;
         }
-        const maxScrollY = Math.max(0, pageHeight - viewportHeight);
+        const maxScrollY = Math.max(0, capturePageHeight - viewportHeight);
         const desiredY = Math.min(targetY, maxScrollY);
         await settleAfterScroll(desiredY);
 
@@ -265,8 +279,9 @@
         const imageDataUrl = await requestVisibleFrame(actualY);
         frames.push({ scrollY: actualY, imageDataUrl });
 
-        pageHeight = Math.max(pageHeight, getPageHeight());
-        const updatedMax = Math.max(0, pageHeight - viewportHeight);
+        measuredPageHeight = Math.max(measuredPageHeight, getPageHeight());
+        capturePageHeight = Math.min(Math.max(capturePageHeight, measuredPageHeight), maxCapturePageHeight);
+        const updatedMax = Math.max(0, capturePageHeight - viewportHeight);
         if (actualY >= updatedMax - 1) {
           break;
         }
@@ -274,9 +289,9 @@
         targetY = actualY + step;
       }
 
-      const stitchedImageDataUrl = await stitchFrames(frames, pageHeight);
+      const stitchedImageDataUrl = await stitchFrames(frames, capturePageHeight);
 
-      await chrome.runtime.sendMessage({
+      const completion = await chrome.runtime.sendMessage({
         type: MESSAGE_TYPE.CONTENT_FULLPAGE_COMPLETE,
         imageDataUrl: stitchedImageDataUrl,
         sourceUrl: location.href,
@@ -286,15 +301,23 @@
           width: window.innerWidth,
           height: window.innerHeight
         },
-        scrollPageHeight: pageHeight,
+        scrollPageHeight: capturePageHeight,
         userAgent: navigator.userAgent,
         captureDiagnostics: {
           frameCount: frames.length,
           overlapCssPx: overlap,
           stepCssPx: step,
-          hiddenPinnedCount: pinned.hiddenCount
+          hiddenPinnedCount: pinned.hiddenCount,
+          measuredPageHeight,
+          capturePageHeight,
+          cappedDynamicGrowth: measuredPageHeight > capturePageHeight,
+          hitFrameLimit: frames.length >= MAX_CAPTURE_FRAMES
         }
       });
+
+      if (!completion?.ok) {
+        throw new Error(completion?.error ?? "Could not open editor for full-page capture.");
+      }
     } finally {
       restorePinnedElements();
       window.scrollTo(originalX, originalY);

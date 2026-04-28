@@ -25,10 +25,12 @@ If people want to support the work, donations are welcome. Paying for open sourc
 
 - Selection capture
 - Scrolling full-page capture
-- Editor with layers + move/resize
-- Crop, pen, highlight, blur, text, sticky notes, and shape primitives
+- Visible viewport capture
+- Layer-based editor with move, resize, rotate, zoom, opacity, and blend modes
+- Crop, pen, highlight, Gaussian/pixelate blur, text, sticky notes, and shape primitives
+- Quick color controls and per-layer styling
 - Layer flattening to final image output
-- Export to PNG, JPG, and WebP
+- Export to PNG, JPG, and WebP, plus copy-to-clipboard
 - Metadata embedding with source URL and capture timestamps
 - Dark/light UI toggle (dark default)
 
@@ -40,7 +42,7 @@ flowchart LR
   P -->|start capture mode| B[Service Worker<br/>src/background/service-worker.js]
   B -->|inject + command| C[Content Scripts<br/>selection-overlay.js<br/>scroll-capture.js]
   C -->|capture result + metadata| B
-  B -->|store session| S[(chrome.storage.session)]
+  B -->|store session| S[(chrome.storage.local)]
   B -->|open editor tab with sessionId| E[Canvas Editor<br/>src/editor]
   E -->|load + clear session| B
   E -->|export image + embedded metadata| O[PNG/JPG/WebP]
@@ -107,7 +109,9 @@ Layer constructors live in `src/editor/layer-model.js`. Layer kinds currently in
 - `text` (including sticky note mode)
 - `blur`
 
-Each layer supports opacity and blend mode, and is rendered in stack order.
+Each layer supports opacity and blend mode and is rendered in stack order.
+Shapes, pen strokes, highlights, and text also support rotation.
+Blur regions can use either Gaussian blur or pixelation.
 
 ### Export + Metadata
 
@@ -124,6 +128,7 @@ Included fields can contain source URL, title, capture timestamp, viewport/page 
 - Capture/edit/export flow is local.
 - No required backend service.
 - No account required.
+- Page capture scripts are injected on demand from explicit user actions rather than running as broad always-on host access.
 
 Privacy policy: [docs/privacy-policy.md](docs/privacy-policy.md)
 
@@ -161,12 +166,13 @@ If ScreenShip misses one of these targets, we should treat it as a bug, not "exp
 - `docs/spec.md`: Product and engineering spec
 - `docs/manual-qa.md`: Manual QA and stitch tuning notes
 - `docs/privacy-policy.md`: Chrome Web Store privacy policy text
+- `img`: extension icons and README/store imagery
+- `scripts`: metadata and release-support helpers
 - `src/background`: Capture orchestration + session management
 - `src/content`: Selection overlay and full-page scroll capture logic
 - `src/editor`: Canvas editor UI, interaction logic, and layer rendering
 - `src/popup`: Extension action popup UI
 - `src/shared`: Message contracts and metadata helpers
-- `scripts/verify-metadata.js`: Metadata inspection helper
 
 ## Useful Commands
 
@@ -179,7 +185,21 @@ node scripts/verify-metadata.js /path/to/exported-image.png
 Syntax check all JS:
 
 ```bash
-find src -name '*.js' -print0 | xargs -0 -n1 node --check
+find src -name '*.js' -print0 | xargs -0 -n1 node --experimental-default-type=module --check
+```
+
+Rebuild the extension icons:
+
+```bash
+./scripts/render-extension-icons.sh
+```
+
+Build a Chrome Web Store upload zip:
+
+```bash
+mkdir -p dist
+VERSION=$(node -p "JSON.parse(require('fs').readFileSync('manifest.json','utf8')).version")
+zip -r "dist/screenship-cws-$VERSION.zip" manifest.json src img -x 'img/screenship-ScreenShip-Editor-2026-04-10T12-07-26.png'
 ```
 
 ## License
@@ -187,12 +207,15 @@ find src -name '*.js' -print0 | xargs -0 -n1 node --check
 Licensed under the GNU Affero General Public License v3.0 (`AGPL-3.0`).
 See [LICENSE](LICENSE).
 
+In plain English: ScreenShip is free software, and the AGPL is there to help keep it that way.
+If someone modifies ScreenShip and offers that modified version to users over a network, they must make the corresponding source available to those users.
+
 ## Where To Improve Next
 
 If we want to level this up from "great" to "ridiculously good," the highest-value next steps are:
 
-1. Add automated end-to-end tests for capture -> edit -> export flows.
-2. Harden full-page stitch behavior for sticky/fixed elements and dynamic feeds.
-3. Add keyboard-first editing ergonomics (nudge, duplicate, lock layer, quick color swaps).
-4. Improve text engine parity further (selection, multiline edit affordances, richer typography controls).
-5. Add release tooling for Chrome Web Store packaging and policy checks.
+1. Add automated end-to-end tests for the full popup -> capture -> edit -> export workflow.
+2. Keep hardening full-page capture on the ugliest real-world pages: sticky headers, dynamic feeds, and lazy-loaded layouts.
+3. Add keyboard-first layer ergonomics like nudge, duplicate, lock/hide, and faster reordering.
+4. Push the text tool further with richer multiline editing, selection affordances, and better typography controls.
+5. Add more precision editing touches, especially around alignment, snapping, and stronger redaction/blur workflows.
